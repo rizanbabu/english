@@ -36,8 +36,23 @@ from gtts import gTTS
 st.set_page_config(page_title="English with Asha", page_icon="🌸", layout="centered")
 
 # Tried in order; the first one that works on your free key is remembered.
-MODELS = [m for m in [st.secrets.get("GEMINI_MODEL"), "gemini-flash-latest", "gemini-flash-lite-latest",
-                      "gemini-2.5-flash", "gemini-2.5-flash-lite"] if m]
+MODELS = [m for m in [st.secrets.get("GEMINI_MODEL"), "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash",
+                      "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"] if m]
+
+
+def discover_models(client) -> list:
+    """Ask Google which Flash models this key can use (in case the names above change again)."""
+    try:
+        found = []
+        for m in client.models.list():
+            name = (m.name or "").removeprefix("models/")
+            actions = getattr(m, "supported_actions", None) or []
+            if "flash" in name and "generateContent" in actions and not any(
+                    x in name for x in ("tts", "image", "live", "audio", "transcribe", "embedding")):
+                found.append(name)
+        return sorted(found, reverse=True)
+    except Exception:
+        return []
 PROGRESS_FILE = Path(__file__).with_name("progress.json")
 
 TOPICS = {
@@ -122,7 +137,10 @@ def ask_ai(system: str, messages: list) -> str:
                 for m in messages]
     config = types.GenerateContentConfig(system_instruction=system, response_mime_type="application/json",
                                          temperature=0.7)
-    models = [st.session_state["model_ok"]] if st.session_state.get("model_ok") else MODELS
+    if st.session_state.get("model_ok"):
+        models = [st.session_state["model_ok"]]
+    else:
+        models = MODELS + [m for m in discover_models(client) if m not in MODELS]
     errors = []
     for model in models:
         try:
