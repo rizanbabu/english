@@ -1,19 +1,20 @@
 """
 English with Asha — a kind, patient voice English teacher for a Nepali beginner.
 
-Runs on Streamlit. Uses your Anthropic (Claude API) credits for the teacher.
-Voice:  speech-to-text = Google's free speech recognition (via SpeechRecognition)
-        text-to-speech = gTTS (Google Translate voice, supports slow English + Nepali)
+Runs on Streamlit. 100% free:
+Teacher: Google Gemini API free tier (free key from https://aistudio.google.com/apikey)
+Voice:   speech-to-text = Google's free speech recognition (via SpeechRecognition)
+         text-to-speech = gTTS (Google Translate voice, supports slow English + Nepali)
 
 Setup
 -----
 1. pip install -r requirements.txt
-2. Create .streamlit/secrets.toml next to this file:
+2. Create .streamlit/secrets.toml next to this file (never commit it to GitHub):
 
-       ANTHROPIC_API_KEY = "sk-ant-..."
-       APP_PASSWORD      = "choose-a-password-for-mom"
-       # optional:
-       # CLAUDE_MODEL    = "claude-sonnet-5-5"
+       GEMINI_API_KEY = "AIza..."
+       APP_PASSWORD   = "choose-a-password-for-mom"
+       # optional, if Google renames models:
+       # GEMINI_MODEL = "gemini-flash-latest"
 
 3. streamlit run app.py
    (or deploy free on share.streamlit.io and paste the same secrets in the app's Settings → Secrets)
@@ -26,14 +27,17 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-import anthropic
 import speech_recognition as sr
 import streamlit as st
+from google import genai
+from google.genai import types
 from gtts import gTTS
 
 st.set_page_config(page_title="English with Asha", page_icon="🌸", layout="centered")
 
-MODEL = st.secrets.get("CLAUDE_MODEL", "claude-sonnet-5-5")
+# Tried in order; the first one that works on your free key is remembered.
+MODELS = [m for m in [st.secrets.get("GEMINI_MODEL"), "gemini-flash-latest", "gemini-flash-lite-latest",
+                      "gemini-2.5-flash", "gemini-2.5-flash-lite"] if m]
 PROGRESS_FILE = Path(__file__).with_name("progress.json")
 
 TOPICS = {
@@ -81,7 +85,7 @@ def login() -> bool:
 if not login():
     st.stop()
 
-client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
+client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
 
 
 # ---------------------------------------------------------------- helpers
@@ -112,9 +116,22 @@ def parse_json(text: str) -> dict:
     return json.loads(m.group(0))
 
 
-def ask_claude(system: str, messages: list, max_tokens: int = 700) -> str:
-    r = client.messages.create(model=MODEL, max_tokens=max_tokens, system=system, messages=messages)
-    return "".join(b.text for b in r.content if b.type == "text")
+def ask_ai(system: str, messages: list) -> str:
+    """Send the conversation to Gemini and return its text. Tries each model until one works."""
+    contents = [{"role": "model" if m["role"] == "assistant" else "user", "parts": [{"text": m["content"]}]}
+                for m in messages]
+    config = types.GenerateContentConfig(system_instruction=system, response_mime_type="application/json",
+                                         temperature=0.7)
+    models = [st.session_state["model_ok"]] if st.session_state.get("model_ok") else MODELS
+    last_err = None
+    for model in models:
+        try:
+            r = client.models.generate_content(model=model, contents=contents, config=config)
+            st.session_state["model_ok"] = model
+            return r.text or ""
+        except Exception as e:  # model missing / not free / busy → try the next one
+            last_err = e
+    raise RuntimeError(f"Gemini is not answering right now: {last_err}")
 
 
 def tts(say: list, slow: bool) -> bytes:
@@ -179,7 +196,7 @@ def api_messages() -> list:
 def teacher_turn() -> None:
     with st.spinner("Asha is thinking… · आशाले सोच्दैछिन्…"):
         try:
-            raw = ask_claude(rules(ss.topic), api_messages())
+            raw = ask_ai(rules(ss.topic), api_messages())
             try:
                 m = parse_json(raw)
             except Exception:
@@ -187,11 +204,11 @@ def teacher_turn() -> None:
             say = [{"lang": "ne" if x.get("lang") == "ne" else "en", "text": str(x.get("text", ""))}
                    for x in m.get("say", []) if x.get("text")]
             mistake = m.get("mistake") if isinstance(m.get("mistake"), dict) and m["mistake"].get("better") else None
-        except anthropic.APIError as e:
-            say = [{"lang": "en", "text": "Sorry, something went wrong. Please try again."},
-                   {"lang": "ne", "text": "माफ गर्नुहोस्, केही गडबड भयो। फेरि प्रयास गर्नुहोस्।"}]
+        except Exception as e:
+            say = [{"lang": "en", "text": "Sorry, something went wrong. Please try again in a minute."},
+                   {"lang": "ne", "text": "माफ गर्नुहोस्, केही गडबड भयो। एक मिनेटपछि फेरि प्रयास गर्नुहोस्।"}]
             mistake = None
-            st.error(f"API error: {e}")
+            st.error(f"Error: {e}")
     ss.turns.append({"r": "t", "say": say, "mistake": mistake})
     ss.audio = tts(say, ss.slow)
     ss.autoplay = True
@@ -218,7 +235,7 @@ Write gentle, encouraging feedback for her. Reply ONLY with JSON:
 "words":[{{"en":"word or phrase","ne":"Nepali meaning"}}],
 "next_en":"one short sentence: what to practise next time","next_ne":"same in Nepali"}}
 "well": 2-3 items. "improve": at most 3, the most useful only, from her real sentences (empty list if none). "words": 3-6 useful words from today."""
-    raw = ask_claude("You are Asha, a kind English teacher.", [{"role": "user", "content": prompt}], 1200)
+    raw = ask_ai("You are Asha, a kind English teacher.", [{"role": "user", "content": prompt}])
     return parse_json(raw)
 
 
