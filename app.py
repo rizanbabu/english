@@ -85,7 +85,7 @@ def login() -> bool:
 if not login():
     st.stop()
 
-client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+client = genai.Client(api_key=str(st.secrets["GEMINI_API_KEY"]).strip())
 
 
 # ---------------------------------------------------------------- helpers
@@ -123,15 +123,17 @@ def ask_ai(system: str, messages: list) -> str:
     config = types.GenerateContentConfig(system_instruction=system, response_mime_type="application/json",
                                          temperature=0.7)
     models = [st.session_state["model_ok"]] if st.session_state.get("model_ok") else MODELS
-    last_err = None
+    errors = []
     for model in models:
         try:
             r = client.models.generate_content(model=model, contents=contents, config=config)
             st.session_state["model_ok"] = model
+            st.session_state["last_error"] = None
             return r.text or ""
         except Exception as e:  # model missing / not free / busy → try the next one
-            last_err = e
-    raise RuntimeError(f"Gemini is not answering right now: {last_err}")
+            errors.append(f"{model}: {str(e)[:300]}")
+    st.session_state.pop("model_ok", None)
+    raise RuntimeError("\n\n".join(errors))
 
 
 def tts(say: list, slow: bool) -> bytes:
@@ -208,7 +210,7 @@ def teacher_turn() -> None:
             say = [{"lang": "en", "text": "Sorry, something went wrong. Please try again in a minute."},
                    {"lang": "ne", "text": "माफ गर्नुहोस्, केही गडबड भयो। एक मिनेटपछि फेरि प्रयास गर्नुहोस्।"}]
             mistake = None
-            st.error(f"Error: {e}")
+            ss.last_error = str(e)
     ss.turns.append({"r": "t", "say": say, "mistake": mistake})
     ss.audio = tts(say, ss.slow)
     ss.autoplay = True
@@ -318,6 +320,10 @@ for t in ss.turns:
         st.markdown(f"<div class='bubble teacher'>👩‍🏫 {html}</div>", unsafe_allow_html=True)
     else:
         st.markdown(f"<div class='bubble me'>{esc(t['text'])}</div>", unsafe_allow_html=True)
+
+if ss.get("last_error"):
+    with st.expander("⚠️ Technical details", expanded=True):
+        st.code(ss.last_error, language=None)
 
 if ss.audio:
     st.audio(ss.audio, format="audio/mp3", autoplay=ss.autoplay)
